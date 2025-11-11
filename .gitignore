@@ -1,4 +1,6 @@
+.claude
 # custom .gitignore
+data
 submit.py
 !src/data/__init__.py
 logs/
