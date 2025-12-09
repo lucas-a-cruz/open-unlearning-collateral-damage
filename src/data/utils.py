@@ -1,8 +1,10 @@
-import torch
+import logging
+import os
+from typing import Any, Dict, List, Union
+
 import datasets
 import numpy as np
-import logging
-from typing import List, Dict, Any, Union
+import torch
 
 IGNORE_INDEX = -100  # TODO put in common constants
 
@@ -10,8 +12,44 @@ logger = logging.getLogger("data")
 
 
 def load_hf_dataset(path, **kwargs):
-    dataset = datasets.load_dataset(path, **kwargs)
-    return dataset
+    """
+    Loads a Hugging Face dataset from a local path or the Hub.
+    This function intelligently switches between `load_from_disk` for datasets
+    saved with `save_to_disk` and `load_dataset` for Hub datasets or raw files.
+    """
+    if os.path.isdir(path) and (os.path.exists(os.path.join(path, "dataset_info.json")) or os.path.exists(os.path.join(path, "dataset_dict.json"))):
+        loaded_data = datasets.load_from_disk(path)
+        split = kwargs.get("split")
+
+        if isinstance(loaded_data, datasets.DatasetDict):
+            # A DatasetDict was loaded, select the requested split.
+            if not split:
+                return loaded_data  # Return the whole dict if no split is specified
+            
+            if split in loaded_data:
+                return loaded_data[split]
+            else:
+                raise ValueError(
+                    f"Split '{split}' not found in dataset at {path}. "
+                    f"Available splits: {list(loaded_data.keys())}"
+                )
+        
+        elif isinstance(loaded_data, datasets.Dataset):
+            # A single Dataset was loaded. This is assumed to be the 'train' split.
+            if split and split != 'train':
+                logger.warning(
+                    f"Dataset at {path} is a single split, but split '{split}' was requested. "
+                    f"Ignoring requested split and returning the single dataset, assuming it's 'train'."
+                )
+            return loaded_data
+        
+        else:
+            # This case should ideally not be reached
+            raise TypeError(f"Loaded an unexpected type {type(loaded_data)} from disk at {path}")
+
+    else:
+        # Path is not a saved dataset directory, so use load_dataset for Hub or raw files.
+        return datasets.load_dataset(path, **kwargs)
 
 
 def preprocess_chat_instance(
