@@ -218,6 +218,7 @@ def run_unlearning(
     num_train_epochs: int,
     per_device_train_batch_size: int,
     gradient_accumulation_steps: int,
+    use_accelerate: bool,
 ):
     """
     Executa o script de treinamento de desaprendizagem.
@@ -227,26 +228,24 @@ def run_unlearning(
     print("="*80)
 
     train_script_path = Path("third_party/src/train.py")
-    
+
     # Garante que third_party/src esteja em PYTHONPATH para o subprocesso
     current_python_path = os.environ.get("PYTHONPATH", "")
     # O Path.resolve() garante que o caminho é absoluto, importante para PYTHONPATH
     new_python_path = str(Path("third_party/src").resolve())
     if current_python_path:
         new_python_path = f"{new_python_path}{os.pathsep}{current_python_path}"
-    
+
     env = os.environ.copy()
     env["PYTHONPATH"] = new_python_path
     env["CUDA_VISIBLE_DEVICES"] = "0,1"
 
     # O config_name é relativo ao config_path.
     config_name = experiment_config_path.relative_to(Path.cwd() / "third_party/configs/experiment").as_posix()
-    
     print(f'CONFIG PATH = {config_name}')
 
-    # Constrói o comando base
-    command = [
-        # sys.executable,
+    # Constrói os argumentos para o script de treinamento
+    train_args = [
         str(train_script_path),
         f"--config-name=unlearn.yaml",
         f"experiment={config_name}",
@@ -262,40 +261,43 @@ def run_unlearning(
         "trainer.args.logging_steps=10",
         "trainer.args.ddp_find_unused_parameters=false",
         "trainer.args.gradient_checkpointing=true",
-        "trainer.args.optim=adamw_torch",
     ]
 
-    print("🔧 Configurando para execução Multi-GPU com Accelerate e DeepSpeed.")
-    port = get_free_port()
-    print(f"   -> Porta Principal (MASTER_PORT): {port}")
-    
-    # O executável agora é 'accelerate'
-    command = [
-        "accelerate", "launch",
-        "--config_file", "third_party/configs/accelerate/default_config.yaml",
-        "--main_process_port", str(port),
-        *command
-    ]
-    
+    if use_accelerate:
+        print("🔧 Configurando para execução Multi-GPU com Accelerate e DeepSpeed.")
+        port = get_free_port()
+        print(f"   -> Porta Principal (MASTER_PORT): {port}")
+
+        # O executável agora é 'accelerate'. Ele gerencia a execução do script.
+        command = [
+            "accelerate", "launch",
+            "--config_file", "third_party/configs/accelerate/default_config.yaml",
+            "--main_process_port", str(port),
+            *train_args
+        ]
+    else:
+        print("🔧 Configurando para execução padrão (sem Accelerate).")
+        command = [sys.executable, *train_args]
+
     print(f"\nComando de execução:\n{' '.join(command)}\n")
 
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1, env=env) 
-        
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1, env=env)
+
         for line in iter(process.stdout.readline, ''):
             print(line, end='')
-        
-        process.wait() 
-        
+
+        process.wait()
+
         if process.returncode != 0:
             print(f"❌ O processo de desaprendizagem falhou com o código de saída {process.returncode}.")
             sys.exit(process.returncode)
-            
+
         print("\n✅ Processo de desaprendizagem concluído com sucesso!")
 
     except FileNotFoundError:
-        print(f"❌ Erro: O executável 'accelerate' ou o script de treinamento não foi encontrado.")
-        print("   Certifique-se de que 'accelerate' está instalado ('pip install accelerate') e que os caminhos estão corretos.")
+        print(f"❌ Erro: O executável '{command[0]}' ou o script de treinamento não foi encontrado.")
+        print("   Certifique-se de que o ambiente está configurado corretamente e que os caminhos estão corretos.")
         sys.exit(1)
     except Exception as e:
         print(f"❌ Uma exceção ocorreu durante a execução do desaprendizagem: {e}")
@@ -379,6 +381,11 @@ def main():
         help="O método de desaprendizagem (trainer) a ser usado (ex: GradAscent, NPO)."
     )
     parser.add_argument(
+        "--accelerate",
+        action="store_true",
+        help="Se definido, usa o Hugging Face Accelerate para executar o treinamento distribuído."
+    )
+    parser.add_argument(
         "--input_file",
         type=Path,
         default="data/datasets/collateral_damage_probes.jsonl",
@@ -406,6 +413,7 @@ def main():
     print(f"🔢 Entidades a Esquecer: {args.num_forget}")
     print(f"🤖 Modelo:              {args.model}")
     print(f"🎓 Trainer:             {args.trainer}")
+    print(f"🚀 Accelerate:          {'Sim' if args.accelerate else 'Não'}")
     print(f"🏷️ Nome da Execução:    {run_name}")
     print(f"📂 Diretório de Dados:  {data_run_dir}")
     print("="*80)
@@ -437,6 +445,7 @@ def main():
         args.num_train_epochs,
         args.per_device_train_batch_size,
         args.gradient_accumulation_steps,
+        args.accelerate,
     )
 
     # --- Passo 4: Salvar Resumo da Execução ---
